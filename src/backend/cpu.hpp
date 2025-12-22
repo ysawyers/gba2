@@ -1,5 +1,4 @@
 #include <array>
-#include <cassert>
 #include <cstdint>
 #include <string_view>
 
@@ -16,15 +15,17 @@ namespace backend
     {
     public:
         /*!
-            /param[in] filepath Path to ROM file
+            \brief Loads ROM from a file
+
+            /param[in] filepath Path to a ROM file
         */
-        CPU(std::string_view filepath) :
-            m_memory(filepath)
+        void loadROM(std::string_view filepath)
         {
+            m_memory.loadROM(filepath);
         }
 
         /*!
-            ...
+            TODO conditional noexcept for future passed in lambda
         */
         void start();
 
@@ -32,18 +33,39 @@ namespace backend
         /*!
             \brief Extracts relevant bits for LUT indexing
         */
-        std::uint16_t get_mask_bits(std::uint32_t instr) const noexcept
+        std::uint16_t LUTIndexARM(std::uint32_t instr) const noexcept
         {
-            return ((instr & 0x00FF0000) >> 12) | ((instr & 0x000000F0) >> 4);
+            return ((instr & 0x0FF00000) >> 16) | ((instr & 0x000000F0) >> 4);
         }
 
         /*!
             \brief Extracts relevant bits for LUT indexing
         */
-        std::uint16_t get_mask_bits(std::uint16_t instr) const noexcept
+        std::uint16_t LUTIndexTHUMB(std::uint16_t instr) const noexcept
         {
             return instr >> 6;
         }
+
+        /*!
+            \brief Flushes instruction pipeline
+        */
+        inline void flushPipelineARM() noexcept;
+
+        /*!
+            \brief Flushes instruction pipeline
+        */
+        inline void flushPipelineTHUMB() noexcept;
+
+        /*!
+            \brief Performs barrel shifter operations
+
+            \param[in] shiftType 0=LSL, 1=LSR, 2=ASR, 3=ROR
+        */
+        std::uint32_t barrelShifter(
+            std::uint8_t shiftType,
+            std::uint8_t shiftAmount,
+            std::uint32_t operand
+        ) const noexcept;
 
         /*!
             \brief Executes a single instruction
@@ -87,18 +109,6 @@ namespace backend
         using THUMBOpcodeHandler = int(CPU::*)(std::uint16_t);
 
         //! https://problemkaputt.de/gbatek.htm#armcpuregisterset
-        enum class Mode
-        {
-            System     = 0,
-            User       = 0,
-            FIQ        = 1,
-            SVC        = 2,
-            ABT        = 3,
-            IRQ        = 4,
-            UND        = 5,
-        };
-
-        //! https://problemkaputt.de/gbatek.htm#armcpuregisterset
         struct Registers
         {
         public:
@@ -110,19 +120,8 @@ namespace backend
                 return m_regs[index];
             }
 
-            /*!
-                \brief Swaps out banked registers when switching modes
-
-                \param[in] currentMode Current CPU mode
-                \param[in] newMode New CPU mode
-            */
-            void swapBanks(std::uint8_t currentMode, std::uint8_t newMode) noexcept
-            {
-                // TODO
-            }
-
         public:
-            std::uint32_t m_cpsr{};
+            std::uint32_t m_cpsr{0xD3};
             std::uint32_t m_spsr{};
 
         private:
@@ -208,14 +207,46 @@ namespace backend
             return lut;
         }();
 
-        //! memory interface
-        Memory m_memory;
+        //! lookup table for condition codes
+        std::array<bool, 256> m_conditionLUT = [] consteval
+        {
+            std::array<bool, 256> lut{};
 
-        //! 3-stage pipeline
+            for (int flags = 0b0000; flags <= 0b1111; flags++)
+            {
+                bool n = flags & 8;
+                bool z = flags & 4;
+                bool c = flags & 2;
+                bool v = flags & 1;
+
+                lut[(0b0000 << 4) | flags] = z;                // COND EQ
+                lut[(0b0001 << 4) | flags] = !z;               // COND NE
+                lut[(0b0010 << 4) | flags] = c;                // COND CS
+                lut[(0b0011 << 4) | flags] = !c;               // COND CC
+                lut[(0b0100 << 4) | flags] = n;                // COND MI
+                lut[(0b0101 << 4) | flags] = !n;               // COND PL
+                lut[(0b0110 << 4) | flags] = v;                // COND VS
+                lut[(0b0111 << 4) | flags] = !v;               // COND VC
+                lut[(0b1000 << 4) | flags] = c && !z;          // COND HI
+                lut[(0b1001 << 4) | flags] = !c || z;          // COND LS
+                lut[(0b1010 << 4) | flags] = n == v;           // COND GE
+                lut[(0b1011 << 4) | flags] = n != v;           // COND LT
+                lut[(0b1100 << 4) | flags] = !(z || (n != v)); // COND GT
+                lut[(0b1101 << 4) | flags] = z || (n != v);    // COND LE
+                lut[(0b1110 << 4) | flags] = true;             // COND AL
+            }
+
+            return lut;
+        }();
+
+        //! memory interface
+        Memory m_memory{};
+
+        //! 3-stage pipeline ([0]=fetch, [1]=decode)
         std::array<std::uint32_t, 2> m_pipeline
         {
-            0xF0000000, // fetch
-            0xF0000000  // decode
+            0xF0000000,
+            0xF0000000
         };
 
         //! active registers
