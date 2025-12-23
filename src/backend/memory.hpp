@@ -1,3 +1,5 @@
+#pragma once
+
 #include <format>
 #include <fstream>
 #include <string_view>
@@ -58,11 +60,11 @@ namespace backend
         {
             if (std::is_same_v<T, std::uint32_t>)
             {
-                address &= ~0x3;
+                address &= ~3;
             }
             else if (std::is_same_v<T, std::uint16_t>)
             {
-                address &= ~0x1;
+                address &= ~1;
             }
 
             if (address <= 0x00003FFF)
@@ -72,6 +74,7 @@ namespace backend
                     return *std::bit_cast<T*>(m_rom.data() + address);
                 }
                 // TODO: this is a critical error, propogate this to caller
+                return 0;
             }
 
             return 0;
@@ -90,11 +93,11 @@ namespace backend
         {
             if (std::is_same_v<T, std::uint32_t>)
             {
-                address &= ~0x3;
+                address &= ~3;
             }
             else if (std::is_same_v<T, std::uint16_t>)
             {
-                address &= ~0x1;
+                address &= ~1;
             }
 
         };

@@ -1,4 +1,5 @@
-#include <concepts>
+#pragma once
+
 #include <vector>
 
 

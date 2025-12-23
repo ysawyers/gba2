@@ -15,7 +15,7 @@
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "YES",
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_FLAGS": "-Og -fsanitize=address,undefined -Wall -Wpedantic -Wswitch-default -Werror"
+        "CMAKE_CXX_FLAGS": "-Og -fsanitize=address,undefined -Wall -Wpedantic -Wswitch-default -Werror -fbracket-depth=4096"
       }
     },
     {
@@ -27,7 +27,7 @@
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "YES",
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CXX_FLAGS": "-O3"
+        "CMAKE_CXX_FLAGS": "-O3 -lto -fbracket-depth=4096"
       }
     }
   ]
