@@ -8,7 +8,7 @@ int main()
     {
         backend::CPU cpu;
         cpu.loadROM("/Users/yondensawyers/Desktop/gameboyadvanced/roms/panda.gba");
-        cpu.start();
+        cpu.run();
     }
     catch (const std::exception& e)
     {

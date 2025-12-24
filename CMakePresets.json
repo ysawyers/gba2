@@ -15,7 +15,7 @@
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "YES",
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_FLAGS": "-Og -fsanitize=address,undefined -Wall -Wpedantic -Wswitch-default -Werror -fbracket-depth=4096"
+        "CMAKE_CXX_FLAGS": "-Og -fsanitize=address,undefined -Wall -Wpedantic -Werror -Wno-error=gnu-case-range -Wno-gnu-case-range -fbracket-depth=4096"
       }
     },
     {
