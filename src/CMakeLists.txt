@@ -4,7 +4,11 @@ add_executable(${PROJECT_NAME}
     main.cpp
 )
 
-target_include_directories(${PROJECT_NAME}
+add_subdirectory(libs)
+add_subdirectory(backend)
+add_subdirectory(local)
+
+target_include_directories(backend
     PUBLIC
     ${SOURCE_DIR}
 )

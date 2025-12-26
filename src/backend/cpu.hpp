@@ -2,7 +2,7 @@
 
 #include <array>
 #include <cassert>
-#include <cstdint>
+#include <format>
 #include <iostream>
 #include <string_view>
 
@@ -37,18 +37,28 @@ namespace backend
         /*!
             TODO conditional noexcept for future passed in lambda
         */
-        void run()
+        void run(PPU::FramebufferHandler ppu)
         {
-            assert(m_memory.loadedROM());
             m_trap = false;
+            m_memory.registerHandlers(ppu);
 
             while (!m_trap)
             {
-                if (execute() == -1) [[unlikely]]
+                int cycles = execute();
+
+                if (cycles != -1) [[likely]]
                 {
-                    assert(false && "malformed instruction");
+                    // currently 1 cpi
+                    assert(cycles == 1);
+
+                    m_memory.tick(cycles);
+                }
+                else
+                {
+                    m_trap = true;
                 }
             }
+            printf("TRAP!\n");
         }
 
     private:
@@ -223,7 +233,7 @@ namespace backend
                     assert(false && "[cpu] alu_opcode (RSB) TODO");
                     break;
                 }
-                case 0x4:
+                case 0x4: // ADD
                 {
                     std::uint32_t result = m_registers[rn] + operand2;
                     m_registers.setNegativeFlag(result >> 31);
@@ -261,9 +271,16 @@ namespace backend
                     assert(false && "[cpu] alu_opcode (TEQ) TODO");
                     break;
                 }
-                case 0xA:
+                case 0xA: // CMP
                 {
-                    assert(false && "[cpu] alu_opcode (CMP) TODO");
+                    std::uint32_t result = m_registers[rn] - operand2;
+                    m_registers.setNegativeFlag(result >> 31);
+                    m_registers.setZeroFlag(result == 0);
+                    m_registers.setCarryFlag(m_registers[rn] >= operand2);
+                    m_registers.setOverflowFlag(
+                        ((m_registers[rn] >> 31) != (operand2 >> 31)) &&
+                        ((m_registers[rn] >> 31) != (result >> 31))
+                    );
                     break;
                 }
                 case 0xB:
@@ -276,7 +293,7 @@ namespace backend
                     assert(false && "[cpu] alu_opcode (ORR) TODO");
                     break;
                 }
-                case 0xD:
+                case 0xD: // MOV
                 {
                     m_registers[rd] = operand2;
                     m_registers.setNegativeFlag(operand2 >> 31);
@@ -360,7 +377,7 @@ namespace backend
 
             if constexpr (I)
             {
-                offset = ((instr >> 8) & 0xF << 4) | (instr & 0xF);
+                offset = (((instr >> 8) & 0xF) << 4) | (instr & 0xF);
             }
             else
             {
@@ -511,10 +528,34 @@ namespace backend
             return 1;
         }
 
-        //! https://problemkaputt.de/gbatek.htm#armopcodesmemoryblockdatatransferldmstm
+        /*!
+            \brief https://problemkaputt.de/gbatek.htm#armopcodesmemoryblockdatatransferldmstm
+
+            \tparam P 0=post; add offset after transfer, 1=pre; before trans.
+            \tparam U 0=down; subtract offset from base, 1=up; add to base
+            \tparam S 0=No, 1=load PSR or force user mode
+            \tparam W 0=no write-back, 1=write address into base
+            \tparam L 0=Store to memory, 1=Load from memory
+        */
+        template <bool P, bool U, bool S, bool W, bool L>
         int ldm_stm_opcode(std::uint32_t instr) noexcept
         {
-            assert(false && "[cpu] ldm_stm_opcode TODO");
+            // std::uint8_t rn = (instr >> 16) & 0xF;
+            // std::uint16_t reglist = instr & 0xFFFF;
+
+            if constexpr (S)
+            {
+                assert(false && "PSR stuff for LDM/STM");
+            }
+
+            if constexpr (L)
+            {
+                assert(false && "LDM");
+            }
+            else
+            {
+                assert(false && "STM");
+            }
 
             return 1;
         }
@@ -554,6 +595,8 @@ namespace backend
         */
         int execute() noexcept
         {
+            // TODO handle IRQ here
+
             std::uint32_t instr = m_pipeline[1];
             m_pipeline[1] = m_pipeline[0];
 
@@ -702,7 +745,7 @@ namespace backend
             opcodeLUT.fill(Opcode::TRAP);
 
             auto registerOpcodes =
-            [&opcodeLUT](Opcode opcode, std::uint16_t bitmask, std::uint16_t wildcard)
+            [&](Opcode opcode, std::uint16_t bitmask, std::uint16_t wildcard)
             {
                 auto bitmasks = common::generatePermutations<std::uint16_t>(bitmask, wildcard);
                 for (const auto bitmask : bitmasks)
@@ -819,7 +862,13 @@ namespace backend
                     }
                     case Opcode::LDM_STM:
                     {
-                        lut[hash] = &CPU::ldm_stm_opcode;
+                        lut[hash] = &CPU::ldm_stm_opcode<
+                            (hash >> 8) & 1,
+                            (hash >> 7) & 1,
+                            (hash >> 6) & 1,
+                            (hash >> 5) & 1,
+                            (hash >> 4) & 1
+                        >;
                         break;
                     }
                     case Opcode::SWI:
@@ -855,12 +904,12 @@ namespace backend
             opcodeLUT.fill(Opcode::TRAP);
 
             // auto registerOpcodes =
-            // [&lut](Opcode opcode, std::uint16_t bitmask, std::uint16_t wildcard)
+            // [&](Opcode opcode, std::uint16_t bitmask, std::uint16_t wildcard)
             // {
             //     auto bitmasks = common::generatePermutations<std::uint16_t>(bitmask, wildcard);
             //     for (const auto bitmask : bitmasks)
             //     {
-            //         lut[bitmask] = opcode;
+            //         opcodeLUT[bitmask] = opcode;
             //     }
             // };
 
@@ -907,15 +956,15 @@ namespace backend
         //! memory interface
         Memory m_memory{};
 
+        //! active registers
+        Registers m_registers{};
+
         //! 3-stage pipeline ([0]=fetch, [1]=decode)
         std::array<std::uint32_t, 2> m_pipeline
         {
             0xF0000000,
             0xF0000000
         };
-
-        //! active registers
-        Registers m_registers{};
 
         //! trap flag
         bool m_trap{false};

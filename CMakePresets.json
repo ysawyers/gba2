@@ -7,9 +7,9 @@
   },
   "configurePresets": [
     {
-      "name": "debug",
+      "name": "local/debug",
       "displayName": "Debug",
-      "description": "debug build",
+      "description": "local debug build",
       "generator": "Unix Makefiles",
       "binaryDir": "build",
       "cacheVariables": {
@@ -19,15 +19,15 @@
       }
     },
     {
-      "name": "release",
+      "name": "local/release",
       "displayName": "Release",
-      "description": "release build",
+      "description": "local release build",
       "generator": "Unix Makefiles",
       "binaryDir": "build",
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "YES",
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CXX_FLAGS": "-O3 -lto -fbracket-depth=4096"
+        "CMAKE_CXX_FLAGS": "-O3 -flto -fbracket-depth=4096"
       }
     }
   ]
