@@ -2,8 +2,6 @@
 
 #include <array>
 #include <cassert>
-#include <format>
-#include <iostream>
 #include <string_view>
 
 #include "common/bits.hpp"
@@ -19,30 +17,27 @@ namespace backend
     class CPU
     {
     public:
-        CPU()
+        CPU(std::string_view filepath) : m_memory(filepath)
         {
             m_registers[15] = 0x08000000;
         }
 
         /*!
-            \brief Loads ROM from a file
-
-            /param[in] filepath Path to a ROM file
+            \return GamePak title from ROM
         */
-        void loadROM(std::string_view filepath)
+        std::string_view getGamePakTitle() const noexcept
         {
-            m_memory.loadROM(filepath);
+            return m_memory.getGamePakTitle();
         }
 
         /*!
-            TODO conditional noexcept for future passed in lambda
+            ...
         */
-        void run(PPU::FramebufferHandler ppu)
+        bool run(PPU::FramebufferHandler ppu, bool& shutdown) noexcept(noexcept(ppu(nullptr)))
         {
-            m_trap = false;
             m_memory.registerHandlers(ppu);
 
-            while (!m_trap)
+            while (!shutdown)
             {
                 int cycles = execute();
 
@@ -55,10 +50,10 @@ namespace backend
                 }
                 else
                 {
-                    m_trap = true;
+                    return false;
                 }
             }
-            printf("TRAP!\n");
+            return true;
         }
 
     private:
@@ -418,6 +413,7 @@ namespace backend
                         {
                             m_registers[rd] = m_memory.read<std::uint16_t>(address);
                         }
+                        break;
                     }
                     case 2: // LDRSB
                     {
@@ -571,21 +567,13 @@ namespace backend
         //! handles undefined opcodes (ARM)
         int trap_opcode(std::uint32_t instr) noexcept
         {
-            std::cout << std::format("[cpu] ARM opcode executed: {:012b}", LUTIndexARM(instr)).c_str() << "\n";
-            exit(0);
-
-            m_trap = true;
-            return 0;
+            return -1;
         }
 
         //! handles undefined opcodes (THUMB)
         int trap_opcode(std::uint16_t instr) noexcept
         {
-            std::cout << std::format("[cpu] THUMB opcode executed: {:010b}", LUTIndexTHUMB(instr)).c_str() << "\n";
-            exit(0);
-
-            m_trap = true;
-            return 0;
+            return -1;
         }
 
         /*!
@@ -597,14 +585,10 @@ namespace backend
         {
             // TODO handle IRQ here
 
+            m_registers[15] &= ~1;
+
             std::uint32_t instr = m_pipeline[1];
             m_pipeline[1] = m_pipeline[0];
-
-            /*
-                lower bit is masked to ensure recovery from ARM back to
-                THUMB state in the case of a misaligned PC
-            */
-            m_registers[15] &= ~1;
 
             /*
                 The PC offset (+2/+4) fetching into pipeline[0] happens
@@ -954,7 +938,7 @@ namespace backend
         }();
 
         //! memory interface
-        Memory m_memory{};
+        Memory m_memory;
 
         //! active registers
         Registers m_registers{};
@@ -965,8 +949,5 @@ namespace backend
             0xF0000000,
             0xF0000000
         };
-
-        //! trap flag
-        bool m_trap{false};
     };
 }

@@ -6,20 +6,10 @@
 
 namespace backend
 {
-    Memory::Memory() :
+    Memory::Memory(std::string_view filepath) :
         m_mmio(new uint8_t[0x3FF]{}),
         m_vram(new std::uint8_t[0x18000]{}),
         m_ppu(std::bit_cast<PPU::Registers*>(m_mmio), m_vram)
-    {
-    }
-
-    Memory::~Memory()
-    {
-        delete[] m_mmio;
-        delete[] m_vram;
-    }
-
-    void Memory::loadROM(std::string_view filepath)
     {
         std::ifstream file(filepath, std::ios::binary);
 
@@ -34,6 +24,17 @@ namespace backend
             std::istreambuf_iterator<char>(),
             std::back_inserter(m_rom)
         );
+    }
+
+    Memory::~Memory()
+    {
+        delete[] m_mmio;
+        delete[] m_vram;
+    }
+
+    std::string_view Memory::getGamePakTitle() const noexcept
+    {
+        return "GBA";
     }
 
     void Memory::registerHandlers(PPU::FramebufferHandler ppu) noexcept

@@ -4,6 +4,6 @@ add_library(local
 )
 
 target_link_libraries(local
-    PRIVATE
+    PUBLIC
     imgui
 )

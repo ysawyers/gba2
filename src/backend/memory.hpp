@@ -15,7 +15,7 @@ namespace backend
     class Memory
     {
     public:
-        Memory();
+        Memory(std::string_view filepath);
         Memory(Memory&) = delete;
         Memory& operator=(Memory&) = delete;
         Memory(Memory&&) = delete;
@@ -23,11 +23,9 @@ namespace backend
         ~Memory();
 
         /*!
-            \brief Loads ROM from a file
-
-            /param[in] filepath Path to a ROM file
+            \return GamePak title from ROM
         */
-        void loadROM(std::string_view filepath);
+        std::string_view getGamePakTitle() const noexcept;
 
         /*!
             \brief Registers handlers for emulator components
