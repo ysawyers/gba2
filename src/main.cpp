@@ -8,7 +8,7 @@ int main()
     try
     {
         Window window;
-        window.run("/Users/yondensawyers/Desktop/gameboyadvanced/roms/panda.gba");
+        window.run("/Users/yondensawyers/Desktop/gameboyadvanced/roms/arm.gba");
     }
     catch (const std::exception& e)
     {

@@ -65,13 +65,29 @@ namespace backend
         void tick(int cycles) noexcept;
 
     private:
+        /*!
+            \brief Handles open bus reads for unmapped memory reads
+
+            \param[in] address address read from
+
+            \return open bus value
+        */
+        std::uint32_t getOpenBusValue(std::uint32_t address) const noexcept;
+
+    private:
         //! ...
         std::vector<std::uint8_t> m_rom{};
 
-        //! ...
+        //! internal RAM
+        std::uint8_t* m_iram{nullptr};
+
+        //! IO RAM
         std::uint8_t* m_mmio{nullptr};
 
-        //! ...
+        //! Palette RAM
+        std::uint8_t* m_pram{nullptr};
+
+        //! Video RAM
         std::uint8_t* m_vram{nullptr};
 
         //! ...

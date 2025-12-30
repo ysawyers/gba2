@@ -17,10 +17,7 @@ namespace backend
     class CPU
     {
     public:
-        CPU(std::string_view filepath) : m_memory(filepath)
-        {
-            m_registers[15] = 0x08000000;
-        }
+        CPU(std::string_view filepath) : m_memory(filepath) {}
 
         /*!
             \return GamePak title from ROM
@@ -35,11 +32,22 @@ namespace backend
         */
         bool run(PPU::FramebufferHandler ppu, bool& shutdown) noexcept(noexcept(ppu(nullptr)))
         {
+            resetState();
             m_memory.registerHandlers(ppu);
 
             while (!shutdown)
             {
-                int cycles = execute();
+                #ifndef NDEBUG
+                    std::uint32_t oldPC = m_registers[15];
+                    int cycles = execute();
+                    if (oldPC == m_registers[15]) [[unlikely]]
+                    {
+                        fprintf(stderr, "[cpu] pc value stuck at: %08X\n", oldPC);
+                        return false;
+                    }
+                #else
+                    int cycles = execute();
+                #endif
 
                 if (cycles != -1) [[likely]]
                 {
@@ -57,6 +65,39 @@ namespace backend
         }
 
     private:
+        /*!
+            ...
+        */
+        void resetState() noexcept
+        {
+            m_registers.m_cpsr = 0xD3;
+            // SP_svc=03007FE0h
+            // SP_irq=03007FA0h
+            m_registers[13] = 0x03007F00;
+            m_registers[14] = 0x08000000;
+            m_registers[15] = 0x08000000;
+            flushPipelineARM();
+        }
+
+        /*!
+            ...
+        */
+        void printState() noexcept
+        {
+            printf(
+                "R0: %08X R1: %08X R2: %08X R3: %08X\n"
+                "R4: %08X R5: %08X R6: %08X R7: %08X\n"
+                "R8: %08X R9: %08X R10:%08X R11:%08X\n"
+                "R12:%08X SP: %08X LR: %08X PC: %08X\n"
+                "CPSR: %08X\n",
+                m_registers[0], m_registers[1], m_registers[2], m_registers[3],
+                m_registers[4], m_registers[5], m_registers[6], m_registers[7],
+                m_registers[8], m_registers[9], m_registers[10], m_registers[11],
+                m_registers[12], m_registers[13], m_registers[14], m_registers[15],
+                m_registers.m_cpsr
+            );
+        }
+
         /*!
             \brief Performs barrel shifter operations
 
@@ -83,10 +124,18 @@ namespace backend
                     {
                         if (shiftAmount == 0)
                         {
-                            assert(false && "handle LSL#0 special case!");
+                            return std::make_pair(operand, m_registers.getCarryFlag());
                         }
                     }
-                    assert(false && "LSL");
+
+                    if (shiftAmount > 31)
+                    {
+                        return std::make_pair(0, (shiftAmount == 32) & (operand & 1));
+                    }
+                    else
+                    {
+                        return std::make_pair(operand << shiftAmount, operand >> ((32 - shiftAmount) & 1));
+                    }
                 }
                 case 1: // LSR
                 {
@@ -174,11 +223,17 @@ namespace backend
             \tparam Opcode ALU opcode
             \tparam S if true set condition flags
             \tparam ShiftType 0=LSL, 1=LSR, 2=ASR, 3=ROR
+            \tparam R 1=shift by register, 0=shift by immediate
         */
-        template <bool I, std::uint8_t Opcode, bool S, std::uint8_t ShiftType>
+        template <bool I, std::uint8_t Opcode, bool S, std::uint8_t ShiftType, bool R>
         int alu_opcode(std::uint32_t instr) noexcept
         {
             std::uint32_t oldPC = m_registers[15];
+
+            /*
+                TODO rn must be 0 for MOV/MVN and rd must be 0 for CMP/CMN/TST/TEQ
+                what happens when this is violated?
+            */
 
             std::uint8_t rd = (instr >> 12) & 0xF;
             std::uint8_t rn = (instr >> 16) & 0xF;
@@ -203,7 +258,20 @@ namespace backend
             }
             else
             {
-                assert(false && "register as second operand");
+                std::uint8_t rm = instr & 0xF;
+                if constexpr (R)
+                {
+                    assert(false && "shift by register");
+                }
+                else
+                {
+                    auto [result, carryOut] = barrelShifter<true, ShiftType>(
+                        (instr >> 7) & 0x1F,
+                        m_registers[rm]
+                    );
+                    operand2 = result;
+                    carryFlag = carryOut;
+                }
             }
 
             switch (Opcode)
@@ -231,13 +299,16 @@ namespace backend
                 case 0x4: // ADD
                 {
                     std::uint32_t result = m_registers[rn] + operand2;
-                    m_registers.setNegativeFlag(result >> 31);
-                    m_registers.setZeroFlag(result == 0);
-                    m_registers.setCarryFlag((m_registers[rn] >> 31) + (operand2 >> 31) > (result >> 31));
-                    m_registers.setOverflowFlag(
-                        ((m_registers[rn] >> 31) == (operand2 >> 31)) &&
-                        ((m_registers[rn] >> 31) != (result >> 31))
-                    );
+                    if constexpr (S)
+                    {
+                        m_registers.setNegativeFlag(result >> 31);
+                        m_registers.setZeroFlag(result == 0);
+                        m_registers.setCarryFlag((m_registers[rn] >> 31) + (operand2 >> 31) > (result >> 31));
+                        m_registers.setOverflowFlag(
+                            ((m_registers[rn] >> 31) == (operand2 >> 31)) &&
+                            ((m_registers[rn] >> 31) != (result >> 31))
+                        );
+                    }
                     m_registers[rd] = result;
                     break;
                 }
@@ -261,21 +332,36 @@ namespace backend
                     assert(false && "[cpu] alu_opcode (TST) TODO");
                     break;
                 }
-                case 0x9:
+                case 0x9: // TEQ
                 {
-                    assert(false && "[cpu] alu_opcode (TEQ) TODO");
+                    assert(false && "TEQ");
+                    if constexpr (S)
+                    {
+
+                    }
+                    else
+                    {
+                        assert(false && "instruction decoding bug: PSR Transfer");
+                    }
                     break;
                 }
                 case 0xA: // CMP
                 {
-                    std::uint32_t result = m_registers[rn] - operand2;
-                    m_registers.setNegativeFlag(result >> 31);
-                    m_registers.setZeroFlag(result == 0);
-                    m_registers.setCarryFlag(m_registers[rn] >= operand2);
-                    m_registers.setOverflowFlag(
-                        ((m_registers[rn] >> 31) != (operand2 >> 31)) &&
-                        ((m_registers[rn] >> 31) != (result >> 31))
-                    );
+                    if constexpr (S)
+                    {
+                        std::uint32_t result = m_registers[rn] - operand2;
+                        m_registers.setNegativeFlag(result >> 31);
+                        m_registers.setZeroFlag(result == 0);
+                        m_registers.setCarryFlag(m_registers[rn] >= operand2);
+                        m_registers.setOverflowFlag(
+                            ((m_registers[rn] >> 31) != (operand2 >> 31)) &&
+                            ((m_registers[rn] >> 31) != (result >> 31))
+                        );
+                    }
+                    else
+                    {
+                        assert(false && "instruction decoding bug: PSR Transfer");
+                    }
                     break;
                 }
                 case 0xB:
@@ -283,17 +369,27 @@ namespace backend
                     assert(false && "[cpu] alu_opcode (CMN) TODO");
                     break;
                 }
-                case 0xC:
+                case 0xC: // ORR
                 {
-                    assert(false && "[cpu] alu_opcode (ORR) TODO");
+                    std::uint32_t result = m_registers[rn] | operand2;
+                    if constexpr (S)
+                    {
+                        m_registers.setNegativeFlag(result >> 31);
+                        m_registers.setZeroFlag(!result);
+                        m_registers.setCarryFlag(carryFlag);
+                    }
+                    m_registers[rd] = result;
                     break;
                 }
                 case 0xD: // MOV
                 {
                     m_registers[rd] = operand2;
-                    m_registers.setNegativeFlag(operand2 >> 31);
-                    m_registers.setZeroFlag(operand2 == 0);
-                    m_registers.setCarryFlag(carryFlag);
+                    if constexpr (S)
+                    {
+                        m_registers.setNegativeFlag(operand2 >> 31);
+                        m_registers.setZeroFlag(operand2 == 0);
+                        m_registers.setCarryFlag(carryFlag);
+                    }
                     break;
                 }
                 case 0xE:
@@ -316,7 +412,6 @@ namespace backend
             {
                 m_registers[15] += 4;
             }
-
             return 1;
         }
 
@@ -350,8 +445,111 @@ namespace backend
         template <bool I, bool P, bool U, bool B, bool TW, bool L, std::uint8_t ShiftType>
         int ldr_str_single_transfer_opcode(std::uint32_t instr) noexcept
         {
-            printf("HANDLE!\n");
-            exit(0);
+            std::uint32_t offset;
+            if constexpr (I)
+            {
+                offset = m_registers[instr & 0xFFF];
+            }
+            else
+            {
+                std::uint8_t rm = instr & 0xF;
+                if (rm != 15)
+                {
+                    auto [result, carryOut] = barrelShifter<true, ShiftType>(
+                        (instr >> 7) & 0x1F,
+                        m_registers[rm]
+                    );
+                    offset = result;
+                }
+                else
+                {
+                    assert(false && "rm == 15 for ldr/str");
+                }
+            }
+
+            std::uint8_t rd = (instr >> 12) & 0xF;
+            std::uint8_t rn = (instr >> 16) & 0xF;
+            std::uint32_t address = m_registers[rn];
+
+            m_registers[15] += 4;
+            std::uint32_t oldPC = m_registers[15];
+            // PC+12 after this point due to pipeline timings
+
+            if constexpr (P)
+            {
+                if constexpr (U)
+                {
+                    address += offset;
+                }
+                else
+                {
+                    address -= offset;
+                }
+            }
+
+            if constexpr (!P || (P && TW))
+            {
+                if (rn != 15)
+                {
+                    std::uint32_t writebackAddress = address;
+                    if constexpr (!P)
+                    {
+                        if constexpr (U)
+                        {
+                            writebackAddress += offset;
+                        }
+                        else
+                        {
+                            writebackAddress -= offset;
+                        }
+                    }
+
+                    if (rd != rn)
+                    {
+                        m_registers[rn] = writebackAddress;
+                    }
+                }
+                else
+                {
+                    assert(false && "writeback should not be specified?");
+                }
+            }
+
+            if constexpr (L)
+            {
+                if constexpr (B)
+                {
+                    assert(false && "byte load");
+                }
+                else
+                {
+                    if (address & 1)
+                    {
+                        assert(false && "misaligned word load");
+                    }
+                    else
+                    {
+                        assert(false && "word load");
+                    }
+                }
+            }
+            else
+            {
+                if constexpr (B)
+                {
+                    assert(false && "byte store");
+                }
+                else
+                {
+                    assert(false && "word store");
+                }
+            }
+
+            if (oldPC != m_registers[15])
+            {
+                flushPipelineARM();
+            }
+            return 1;
         }
 
         /*!
@@ -365,23 +563,33 @@ namespace backend
             \tparam Opcode Type of load/store performed
         */
         template <bool P, bool U, bool I, bool W, bool L, std::uint8_t Opcode>
-        int ldr_str_signed_transfer_opcode(std::uint32_t instr) noexcept
+        int ldr_str_halfword_signed_transfer_opcode(std::uint32_t instr) noexcept
         {
-            std::uint32_t oldPC = m_registers[15];
             std::uint32_t offset;
-
             if constexpr (I)
             {
                 offset = (((instr >> 8) & 0xF) << 4) | (instr & 0xF);
             }
             else
             {
-                assert(false && "register offset!");
+                std::uint8_t rm = instr & 0xF;
+                if (rm != 15)
+                {
+                    offset = m_registers[rm];
+                }
+                else
+                {
+                    assert(false && "rm == 15 where it shouldn't?");
+                }
             }
 
             std::uint8_t rd = (instr >> 12) & 0xF;
             std::uint8_t rn = (instr >> 16) & 0xF;
             std::uint32_t address = m_registers[rn];
+
+            m_registers[15] += 4;
+            std::uint32_t oldPC = m_registers[15];
+            // PC+12 after this point due to pipeline timings
 
             if constexpr (P)
             {
@@ -392,6 +600,34 @@ namespace backend
                 else
                 {
                     address -= offset;
+                }
+            }
+
+            if constexpr (W || !P)
+            {
+                if (rn != 15)
+                {
+                    std::uint32_t writebackAddress = address;
+                    if constexpr (!P)
+                    {
+                        if constexpr (U)
+                        {
+                            writebackAddress += offset;
+                        }
+                        else
+                        {
+                            writebackAddress -= offset;
+                        }
+                    }
+
+                    if (rd != rn)
+                    {
+                        m_registers[rn] = writebackAddress;
+                    }
+                }
+                else
+                {
+                    assert(false && "writeback should not be specified?");
                 }
             }
 
@@ -438,63 +674,63 @@ namespace backend
                 m_memory.write<std::uint16_t>(address, m_registers[rd]);
             }
 
-            if constexpr (W || !P)
-            {
-                if constexpr (!P)
-                {
-                    if constexpr (U)
-                    {
-                        address += offset;
-                    }
-                    else
-                    {
-                        address -= offset;
-                    }
-                }
-
-                if constexpr (!L)
-                {
-                    /*
-                        Technically, the store happens after the writeback in
-                        hardware so to emulate this, writeback only happens if
-                        rd != rn to prevent clobbering the written value.
-                    */
-                    if (rd != rn)
-                    {
-                        m_registers[rn] = address;
-                    }
-                }
-                else
-                {
-                    m_registers[rn] = address;
-                }
-            }
-
             if (m_registers[15] != oldPC)
             {
                 flushPipelineARM();
             }
+            return 1;
+        }
+
+        /*!
+            \brief https://problemkaputt.de/gbatek.htm#armopcodespsrtransfermrsmsr
+
+            \tparam I 0=immediate, 1=register
+            \tparam PSR 0=CPSR, 1=SPSR
+            \tparam MSR 0=MRS, 1=MSR
+        */
+        template <bool I, bool PSR, bool MSR>
+        int psr_transfer_opcode(std::uint32_t instr) noexcept
+        {
+            // constexpr std::uint32_t MSR_MASK = 0xFF0000FF;
+            std::uint32_t operand;
+
+            if constexpr (I)
+            {
+                auto [result, carryOut] = barrelShifter<false, 3>(
+                    ((instr >> 8) & 0xF) * 2,
+                    instr & 0xFF
+                );
+                operand = result;
+            }
             else
             {
-                m_registers[15] += 4;
+                assert(false && "[cpu] msr_opcode (register) TODO");
             }
 
-            return 1;
-        }
+            if constexpr (MSR)
+            {
+                if ((instr >> 19) & 1) // flag bits
+                {
+                    m_registers.setNegativeFlag((operand >> 31) & 1);
+                    m_registers.setZeroFlag((operand >> 30) & 1);
+                    m_registers.setCarryFlag((operand >> 29) & 1);
+                    m_registers.setOverflowFlag((operand >> 28) & 1);
+                }
 
-        //! https://problemkaputt.de/gbatek.htm#armopcodespsrtransfermrsmsr
-        int mrs_opcode(std::uint32_t instr) noexcept
-        {
-            assert(false && "[cpu] mrs_opcode TODO");
+                if ((instr >> 16) & 1) // control bits
+                {
+                    // The T-bit must not change
+                    operand &= ~(1 << CPSR_T_BIT);
 
-            return 1;
-        }
+                    assert(false && "[cpu] msr_opcode control mask");
+                }
+            }
+            else
+            {
+                assert(false && "[cpu] mrs_opcode TODO");
+            }
 
-        //! https://problemkaputt.de/gbatek.htm#armopcodespsrtransfermrsmsr
-        int msr_opcode(std::uint32_t instr) noexcept
-        {
-            assert(false && "[cpu] msr_opcode TODO");
-
+            m_registers[15] += 4;
             return 1;
         }
 
@@ -519,7 +755,22 @@ namespace backend
         //! https://problemkaputt.de/gbatek.htm#armopcodesbranchandbranchwithlinkbblbxblxswibkpt
         int bx_opcode(std::uint32_t instr) noexcept
         {
-            assert(false && "[cpu] bx_opcode TODO");
+            std::uint32_t address = m_registers[instr & 0xF];
+            bool enableThumb = address & 1;
+
+            m_registers.m_cpsr = (m_registers.m_cpsr & ~(1 << CPSR_T_BIT)) | (enableThumb << CPSR_T_BIT);
+            m_registers[15] = address;
+            if (enableThumb)
+            {
+                flushPipelineTHUMB();
+            }
+            else
+            {
+                flushPipelineARM();
+            }
+
+            printState();
+            exit(0);
 
             return 1;
         }
@@ -536,23 +787,135 @@ namespace backend
         template <bool P, bool U, bool S, bool W, bool L>
         int ldm_stm_opcode(std::uint32_t instr) noexcept
         {
-            // std::uint8_t rn = (instr >> 16) & 0xF;
-            // std::uint16_t reglist = instr & 0xFFFF;
+            std::uint8_t rn = (instr >> 16) & 0xF;
+            std::uint32_t address = m_registers[rn];
+            std::uint16_t reglist = instr & 0xFFFF;
+            bool baseInRegList = (reglist >> rn) & 1;
 
+            if (rn == 15) [[unlikely]]
+            {
+                assert(false && "rn == 15 what happens???");
+            }
+
+            m_registers[15] += 4;
+            std::uint32_t oldPC = m_registers[15];
+            // PC+12 after this point due to pipeline timings
+
+            int offset = U ? 4 : -4;
+
+            if (reglist == 0) [[unlikely]]
+            {
+                reglist |= 0x8000;
+                offset = U ? 64 : -64;
+            }
+
+            // std::uint8_t prevMode = 0;
             if constexpr (S)
             {
-                assert(false && "PSR stuff for LDM/STM");
+                if constexpr (L)
+                {
+                    if ((reglist >> 15) & 1)
+                    {
+                        assert(false && "TODO cpsr=spsr_<current mode>");
+                    }
+                }
+                else
+                {
+                    assert(false && "TODO user bank transfer");
+                }
+            }
+
+            int start;
+            int stop;
+            int stride;
+
+            if constexpr (U)
+            {
+                start = __builtin_ffs(reglist) - 1;
+                stop = 16;
+                stride = 1;
+            }
+            else
+            {
+                start = 31 - __builtin_clz(reglist);
+                stop = -1;
+                stride = -1;
             }
 
             if constexpr (L)
             {
-                assert(false && "LDM");
+                for (int reg = start; reg != stop; reg += stride)
+                {
+                    if ((reglist >> reg) & 1)
+                    {
+                        if constexpr (P)
+                        {
+                            address += offset;
+                            m_registers[reg] = m_memory.read<std::uint32_t>(address);
+                        }
+                        else
+                        {
+                            m_registers[reg] = m_memory.read<std::uint32_t>(address);
+                            address += offset;
+                        }
+                    }
+                }
             }
             else
             {
-                assert(false && "STM");
+                if constexpr (P)
+                {
+                    /*
+                        If the base register is the first transfer in the register list,
+                        the unmodified value is written back instead of base + offset.
+                    */
+                    if (start == rn)
+                    {
+                        m_memory.write<std::uint32_t>(address, m_registers[start]);
+                        address += offset;
+                        start += stride;
+                    }
+                }
+
+                for (int reg = start; reg != stop; reg += stride)
+                {
+                    if ((reglist >> reg) & 1)
+                    {
+                        if constexpr (P)
+                        {
+                            address += offset;
+                            m_memory.write<std::uint32_t>(address, m_registers[reg]);
+                        }
+                        else
+                        {
+                            m_memory.write<std::uint32_t>(address, m_registers[reg]);
+                            address += offset;
+                        }
+                    }
+                }
             }
 
+            if constexpr (S)
+            {
+                assert(false && "return to previous mode");
+            }
+
+            if constexpr (W)
+            {
+                /*
+                    No writeback should occur if the base register
+                    was used in the register list.
+                */
+                if (!baseInRegList)
+                {
+                    m_registers[rn] = address;
+                }
+            }
+
+            if (oldPC != m_registers[15])
+            {
+                flushPipelineARM();
+            }
             return 1;
         }
 
@@ -585,10 +948,10 @@ namespace backend
         {
             // TODO handle IRQ here
 
-            m_registers[15] &= ~1;
-
             std::uint32_t instr = m_pipeline[1];
             m_pipeline[1] = m_pipeline[0];
+
+            m_registers[15] &= ~1;
 
             /*
                 The PC offset (+2/+4) fetching into pipeline[0] happens
@@ -645,8 +1008,7 @@ namespace backend
             BX,
             LDM_STM,
             SWI,
-            MRS,
-            MSR,
+            PSR,
             TRAP
         };
 
@@ -711,7 +1073,7 @@ namespace backend
             }
 
         public:
-            std::uint32_t m_cpsr{0xD3};
+            std::uint32_t m_cpsr{};
             std::uint32_t m_spsr{};
 
         private:
@@ -740,40 +1102,40 @@ namespace backend
 
             /* GBA does not use coprocessor instructions */
 
-            // MUL, MLA
-            registerOpcodes(Opcode::MUL, 0b000000001001, 0b000000110000);
-            // MULL, MLAL
-            registerOpcodes(Opcode::MUL, 0b000010001001, 0b000001110000);
-            // SWP
-            registerOpcodes(Opcode::SWP, 0b000100001001, 0b000001000000);
-            // LDRH, STRH
-            registerOpcodes(Opcode::LDR_STR_SIGNED_TRANSFER, 0b000000001011, 0b000111110000);
-            // LDRSB, LDRSH
-            registerOpcodes(Opcode::LDR_STR_SIGNED_TRANSFER, 0b000000011101, 0b000111100010);
-            // MRS
-            registerOpcodes(Opcode::MRS, 0b000100000000, 0b000001000000);
-            // MSR (register)
-            registerOpcodes(Opcode::MSR, 0b000100100000, 0b000001000000);
-            // MSR (immediate)
-            registerOpcodes(Opcode::MSR, 0b001100100000, 0b000001000000);
-            // BX
-            registerOpcodes(Opcode::BX, 0b000100100001, 0b000000000000);
-            // ALU (immediate shift)
-            registerOpcodes(Opcode::ALU, 0b000000000000, 0b000111111110);
-            // ALU (register shift)
-            registerOpcodes(Opcode::ALU, 0b000000000001, 0b000111110110);
-            // ALU (immediate value)
-            registerOpcodes(Opcode::ALU, 0b001000000000, 0b000111111111);
-            // LDR, STR (immediate offset)
-            registerOpcodes(Opcode::LDR_STR_SINGLE_TRANSFER, 0b010000000000, 0b000111111111);
-            // LDR, STR (register offset)
-            registerOpcodes(Opcode::LDR_STR_SINGLE_TRANSFER, 0b011000000000, 0b000111111110);
-            // LDM, STM
-            registerOpcodes(Opcode::LDM_STM, 0b100000000000, 0b000111111111);
-            // B, BL
-            registerOpcodes(Opcode::BRANCH, 0b101000000000, 0b000111111111);
             // SWI
             registerOpcodes(Opcode::SWI, 0b111100000000, 0b000011111111);
+            // B, BL
+            registerOpcodes(Opcode::BRANCH, 0b101000000000, 0b000111111111);
+            // LDM, STM
+            registerOpcodes(Opcode::LDM_STM, 0b100000000000, 0b000111111111);
+            // LDR, STR (register offset)
+            registerOpcodes(Opcode::LDR_STR_SINGLE_TRANSFER, 0b011000000000, 0b000111111110);
+            // LDR, STR (immediate offset)
+            registerOpcodes(Opcode::LDR_STR_SINGLE_TRANSFER, 0b010000000000, 0b000111111111);
+            // ALU (immediate value)
+            registerOpcodes(Opcode::ALU, 0b001000000000, 0b000111111111);
+            // ALU (register shift)
+            registerOpcodes(Opcode::ALU, 0b000000000001, 0b000111110110);
+            // ALU (immediate shift)
+            registerOpcodes(Opcode::ALU, 0b000000000000, 0b000111111110);
+            // BX
+            registerOpcodes(Opcode::BX, 0b000100100001, 0b000000000000);
+            // MSR (immediate)
+            registerOpcodes(Opcode::PSR, 0b001100100000, 0b000001001111);
+            // MSR (register)
+            registerOpcodes(Opcode::PSR, 0b000100100000, 0b000001000000);
+            // MRS
+            registerOpcodes(Opcode::PSR, 0b000100000000, 0b000001000000);
+            // LDRSB, LDRSH
+            registerOpcodes(Opcode::LDR_STR_SIGNED_TRANSFER, 0b000000011101, 0b000111100010);
+            // LDRH, STRH
+            registerOpcodes(Opcode::LDR_STR_SIGNED_TRANSFER, 0b000000001011, 0b000111110000);
+            // SWP
+            registerOpcodes(Opcode::SWP, 0b000100001001, 0b000001000000);
+            // MULL, MLAL
+            registerOpcodes(Opcode::MUL, 0b000010001001, 0b000001110000);
+            // MUL, MLA
+            registerOpcodes(Opcode::MUL, 0b000000001001, 0b000000110000);
 
             std::array<ARMOpcodeHandler, 4096> lut;
             lut.fill(&CPU::trap_opcode);
@@ -795,7 +1157,8 @@ namespace backend
                             (hash >> 9) & 1,
                             (hash >> 5) & 0xF,
                             (hash >> 4) & 1,
-                            (hash >> 1) & 3
+                            (hash >> 1) & 3,
+                            hash & 1
                         >;
                         break;
                     }
@@ -824,7 +1187,7 @@ namespace backend
                     }
                     case Opcode::LDR_STR_SIGNED_TRANSFER:
                     {
-                        lut[hash] = &CPU::ldr_str_signed_transfer_opcode<
+                        lut[hash] = &CPU::ldr_str_halfword_signed_transfer_opcode<
                             (hash >> 8) & 1,
                             (hash >> 7) & 1,
                             (hash >> 6) & 1,
@@ -860,14 +1223,13 @@ namespace backend
                         lut[hash] = &CPU::swi_opcode;
                         break;
                     }
-                    case Opcode::MRS:
+                    case Opcode::PSR:
                     {
-                        lut[hash] = &CPU::mrs_opcode;
-                        break;
-                    }
-                    case Opcode::MSR:
-                    {
-                        lut[hash] = &CPU::msr_opcode;
+                        lut[hash] = &CPU::psr_transfer_opcode<
+                            (hash >> 9) & 1,
+                            (hash >> 6) & 1,
+                            (hash >> 5) & 1
+                        >;
                         break;
                     }
                     case Opcode::TRAP:

@@ -10,9 +10,10 @@
       "name": "local/debug",
       "displayName": "Debug",
       "description": "local debug build",
-      "generator": "Unix Makefiles",
+      "generator": "Ninja",
       "binaryDir": "build",
       "cacheVariables": {
+        "CMAKE_MAKE_PROGRAM": "${sourceDir}/tools/ninja/ninja",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "YES",
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_CXX_FLAGS": "-Og -fsanitize=address,undefined -Wall -Wpedantic -Werror -Wno-error=gnu-case-range -Wno-gnu-case-range -fbracket-depth=4096"
@@ -22,9 +23,10 @@
       "name": "local/release",
       "displayName": "Release",
       "description": "local release build",
-      "generator": "Unix Makefiles",
+      "generator": "Ninja",
       "binaryDir": "build",
       "cacheVariables": {
+        "CMAKE_MAKE_PROGRAM": "${sourceDir}/tools/ninja/ninja",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "YES",
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_CXX_FLAGS": "-O3 -flto -fbracket-depth=4096"

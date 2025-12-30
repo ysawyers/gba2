@@ -2,3 +2,5 @@ build
 roms
 .DS_Store
 imgui.ini
+tools/ninja/ninja
+tools/ninja/build.ninja
